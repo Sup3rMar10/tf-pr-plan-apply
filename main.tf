@@ -5,7 +5,7 @@ variable "env" {
 
 variable "log_level" {
   type    = string
-  default = "info"
+  default = "debug"
 }
 
 # A local file stands in for a real resource so the pipeline can run with no cloud account.
