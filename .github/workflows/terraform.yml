@@ -1,0 +1,67 @@
+name: terraform
+
+on:
+  pull_request:
+    paths: ["**.tf", ".terraform.lock.hcl", ".github/workflows/terraform.yml"]
+  push:
+    branches: [main]
+    paths: ["**.tf", ".terraform.lock.hcl", ".github/workflows/terraform.yml"]
+
+permissions:
+  contents: read
+  pull-requests: write      # to comment the plan on the PR
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false  # never cancel a run that may be applying
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false      # plain stdout so the output can be captured cleanly
+      - run: terraform fmt -check -recursive
+      - run: terraform init -input=false
+      - run: terraform validate
+      - name: Plan
+        run: |
+          terraform plan -input=false -no-color -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tfplan
+          path: tfplan
+      - name: Comment plan on the pull request
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            let plan = fs.readFileSync('plan.txt', 'utf8');
+            if (plan.length > 60000) plan = plan.slice(0, 60000) + '\n... truncated';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '### Terraform plan\n```\n' + plan + '\n```'
+            });
+
+  apply:
+    if: github.event_name == 'push'
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: production        # add required reviewers on this environment to gate applies
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+      - run: terraform init -input=false
+      - uses: actions/download-artifact@v8
+        with:
+          name: tfplan
+      - name: Apply exactly the plan that was reviewed
+        run: terraform apply -input=false tfplan
